@@ -3,25 +3,31 @@ package main
 import (
 	"context"
 
+	"github.com/bicomsystems/go-libzfs"
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
+	"github.com/golang/protobuf/ptypes/wrappers"
 )
 
-type ZFSIdentityServer struct {
+type identityServer struct {
 }
 
-func (ids *ZFSIdentityServer) GetPluginInfo(ctx context.Context, req *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
+func (ids *identityServer) GetPluginInfo(ctx context.Context, req *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
 	return &csi.GetPluginInfoResponse{
-		Name:          "csi-zfs",
+		Name:          "zfs-csi",
 		VendorVersion: "0.1-dev",
 	}, nil
 }
 
-func (ids *ZFSIdentityServer) Probe(ctx context.Context, req *csi.ProbeRequest) (*csi.ProbeResponse, error) {
-	// TODO: Check if zpool is up
-	return &csi.ProbeResponse{Ready: true}, nil
+func (ids *identityServer) Probe(ctx context.Context, req *csi.ProbeRequest) (*csi.ProbeResponse, error) {
+	dataset, err := zfs.DatasetOpen("TESTPOOL")
+	if err != nil {
+		return &csi.ProbeResponse{Ready: &wrappers.BoolValue{Value: false}}, nil
+	}
+	dataset.Close()
+	return &csi.ProbeResponse{Ready: &wrappers.BoolValue{Value: true}}, nil
 }
 
-func (ids *ZFSIdentityServer) GetPluginCapabilities(ctx context.Context, req *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
+func (ids *identityServer) GetPluginCapabilities(ctx context.Context, req *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
 	return &csi.GetPluginCapabilitiesResponse{
 		Capabilities: []*csi.PluginCapability{
 			{
