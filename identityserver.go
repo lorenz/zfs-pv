@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 
-	"github.com/bicomsystems/go-libzfs"
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"github.com/golang/protobuf/ptypes/wrappers"
+	"github.com/lorenz/go-libzfs"
 )
 
 type identityServer struct {

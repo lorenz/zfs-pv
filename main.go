@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"flag"
 	"net"
 	"os"
 
@@ -26,6 +27,7 @@ import (
 )
 
 func main() {
+	flag.Parse()
 	listener, err := net.Listen("unix", os.Getenv("CSI_ENDPOINT"))
 	if err != nil {
 		glog.Fatalf("Failed to listen: %v", err)
@@ -34,15 +36,9 @@ func main() {
 	opts := []grpc.ServerOption{}
 	server := grpc.NewServer(opts...)
 
-	if ids != nil {
-		csi.RegisterIdentityServer(server, identityServer{})
-	}
-	if cs != nil {
-		csi.RegisterControllerServer(server, controllerServer{})
-	}
-	if ns != nil {
-		csi.RegisterNodeServer(server, nodeServer{})
-	}
+	csi.RegisterIdentityServer(server, &identityServer{})
+	csi.RegisterControllerServer(server, &controllerServer{})
+	csi.RegisterNodeServer(server, &nodeServer{})
 
 	glog.Infof("Listening for connections on address: %#v", listener.Addr())
 

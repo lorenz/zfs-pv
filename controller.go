@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/bicomsystems/go-libzfs"
+	"github.com/lorenz/go-libzfs"
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 )
 
@@ -74,7 +74,9 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	var datasetType zfs.DatasetType
 
 	var capacity int64
-	if req.CapacityRange.LimitBytes > 0 {
+	if req.CapacityRange == nil {
+		capacity = 1024 * 1024 * 1024 // 1GiB
+	} else if req.CapacityRange.LimitBytes > 0 {
 		capacity = req.CapacityRange.LimitBytes
 	} else if req.CapacityRange.RequiredBytes > 0 {
 		capacity = req.CapacityRange.RequiredBytes
@@ -120,8 +122,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	volumeID := zfsDatasetEscape(req.Name)
 	identifier := getZFSPath(volumeID)
 	glog.V(4).Infof("Creating volume %s", volumeID)
-	_, err := zfs.DatasetCreate(identifier, datasetType, props)
-	if err != nil && err.(*zfs.Error).Errno() == zfs.EExists {
+	newDataset, err := zfs.DatasetCreate(identifier, datasetType, props)
+	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.EExists {
 		dataset, err := zfs.DatasetOpen(identifier)
 		if err != nil {
 			return nil, status.Error(codes.Aborted, fmt.Sprintf("Failed to get size of preexisting volume: %v", err))
@@ -143,6 +145,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	} else if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Volume creation failed with unexpected error: %v", err))
 	}
+	newDataset.Close()
 
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
@@ -162,12 +165,18 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 
 	volumeID := req.VolumeId
 	dataset, err := zfs.DatasetOpen(getZFSPath(volumeID))
-	if err != nil && err.(*zfs.Error).Errno() == zfs.ENoent {
+	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
 		return &csi.DeleteVolumeResponse{}, nil
 	} else if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Volume opening failed with unexpected error: %v", err))
 	}
 	defer dataset.Close()
+
+	if mounted, _ := dataset.IsMounted(); mounted {
+		if err := dataset.Unmount(0); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("Volume unmount failed with unexpected error: %v", err))
+		}
+	}
 
 	glog.V(4).Infof("deleting volume %s", volumeID)
 	err = dataset.Destroy(false)
@@ -191,7 +200,7 @@ func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req 
 	volumeID := req.VolumeId
 
 	dataset, err := zfs.DatasetOpen(getZFSPath(volumeID))
-	if err != nil && err.(*zfs.Error).Errno() == zfs.ENoent {
+	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("Volume %v doesn't exist", volumeID))
 	} else if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Volume opening failed with unexpected error: %v", err))
@@ -224,4 +233,32 @@ func (cs *controllerServer) ControllerGetCapabilities(ctx context.Context, req *
 			{Type: &csi.ControllerServiceCapability_Rpc{Rpc: &csi.ControllerServiceCapability_RPC{Type: csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME}}},
 		},
 	}, nil
+}
+
+func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (cs *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (cs *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
 }

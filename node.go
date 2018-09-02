@@ -17,16 +17,19 @@ limitations under the License.
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
+	"syscall"
 
-	zfs "github.com/bicomsystems/go-libzfs"
 	"github.com/golang/glog"
+	zfs "github.com/lorenz/go-libzfs"
 	"golang.org/x/net/context"
 
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"k8s.io/kubernetes/pkg/util/mount"
 )
 
 type nodeServer struct {
@@ -48,18 +51,66 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	targetPath := req.GetTargetPath()
 
 	readOnly := req.GetReadonly()
-	volumeId := req.GetVolumeId()
-	attrib := req.GetVolumeAttributes()
-	mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
+	volumeID := req.GetVolumeId()
+	// TODO: Deal with this
+	// attrib := req.GetVolumeAttributes()
+	var mountflags uintptr = syscall.MS_BIND | syscall.MS_NODEV
 
-	options := []string{"bind"}
 	if readOnly {
-		options = append(options, "ro")
+		mountflags = mountflags | syscall.MS_RDONLY
 	}
-	mounter := mount.New("")
-	path := provisionRoot + volumeId
-	if err := mounter.Mount(path, targetPath, "", options); err != nil {
-		return nil, err
+
+	dataset, err := zfs.DatasetOpen(getZFSPath(volumeID))
+	if err != nil && err.(*zfs.Error).Errno() == zfs.ENoent {
+		return nil, status.Error(codes.NotFound, "Volume does not exist")
+	} else if err != nil {
+		return nil, status.Error(codes.Internal, "Failed to open ZFS dataset for unknown reason")
+	}
+	defer dataset.Close()
+
+	isMounted, sourcePath := dataset.IsMounted()
+
+	if !isMounted {
+		err := dataset.Mount("", 0)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "ZFS internal mount failed: %v", err)
+		}
+		_, sourcePath = dataset.IsMounted()
+	}
+
+	mounts, err := os.Open("/proc/mounts")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "Failed to access /proc/mounts: %v", err)
+	}
+	defer mounts.Close()
+
+	scanner := bufio.NewScanner(mounts)
+	for scanner.Scan() {
+		line := scanner.Text()
+		firstSpace := strings.IndexRune(line, ' ')
+		if firstSpace == -1 {
+			return nil, status.Errorf(codes.Internal, "Kernel violated /proc/mount spec", err)
+		}
+		secondSpace := strings.IndexRune(line[firstSpace+1:], ' ')
+		if secondSpace == -1 {
+			return nil, status.Errorf(codes.Internal, "Kernel violated /proc/mount spec", err)
+		}
+		escapedMountPath := line[firstSpace+1 : firstSpace+secondSpace+1] // TODO: Needs unescaping (octal)
+		source := line[:firstSpace]
+
+		if escapedMountPath == targetPath {
+			if source != getZFSPath(volumeID) {
+				return nil, status.Errorf(codes.FailedPrecondition, "Target path already has %v mounted", source)
+			} else {
+				// TODO: Validate flag equivalence
+				return &csi.NodePublishVolumeResponse{}, nil // Required volume already mounted
+			}
+		}
+	}
+	glog.V(5).Infof("Mounting %v at target %v", volumeID, targetPath)
+
+	if err := syscall.Mount(sourcePath, targetPath, "none", mountflags, ""); err != nil {
+		return nil, status.Errorf(codes.Aborted, "Failed to bind mount: %v", err)
 	}
 
 	return &csi.NodePublishVolumeResponse{}, nil
@@ -78,11 +129,11 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	volumeID := req.GetVolumeId()
 
 	// Unmounting the image
-	err := mount.New("").Unmount(req.GetTargetPath())
+	err := syscall.Unmount(targetPath, 0)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	glog.V(4).Infof("hostpath: volume %s/%s has been unmounted.", targetPath, volumeID)
+	glog.V(4).Infof("Volume %v has been unmounted", targetPath, volumeID)
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
@@ -110,5 +161,28 @@ func (ns *nodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoReque
 
 	return &csi.NodeGetInfoResponse{
 		NodeId: zpool.Properties[zfs.PoolPropGUID].Value,
+		AccessibleTopology: &csi.Topology{
+			Segments: map[string]string{},
+		},
 	}, nil
+}
+
+func (ns *nodeServer) NodeGetId(ctx context.Context, req *csi.NodeGetIdRequest) (*csi.NodeGetIdResponse, error) {
+	zpool, err := zfs.PoolOpen("TESTPOOL")
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to open pool: %v", err))
+	}
+	defer zpool.Close()
+
+	return &csi.NodeGetIdResponse{
+		NodeId: zpool.Properties[zfs.PoolPropGUID].Value,
+	}, nil
+}
+
+func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
+}
+
+func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "Unimplemented")
 }
