@@ -27,7 +27,14 @@ import (
 )
 
 func main() {
+	var zfsName string
+	flag.StringVar(&zfsName, "zfs-name", "", "ZFS name of the Zpool or the full path to a ZFS volume (for example mypool/myvolume)")
 	flag.Parse()
+
+	if zfsName == "" {
+		glog.Fatalf("Required ZFS name is empty")
+	}
+
 	listener, err := net.Listen("unix", os.Getenv("CSI_ENDPOINT"))
 	if err != nil {
 		glog.Fatalf("Failed to listen: %v", err)
@@ -36,9 +43,9 @@ func main() {
 	opts := []grpc.ServerOption{}
 	server := grpc.NewServer(opts...)
 
-	csi.RegisterIdentityServer(server, &identityServer{})
-	csi.RegisterControllerServer(server, &controllerServer{})
-	csi.RegisterNodeServer(server, &nodeServer{})
+	csi.RegisterIdentityServer(server, newIdentityServer(zfsName))
+	csi.RegisterControllerServer(server, newControllerServer(zfsName))
+	csi.RegisterNodeServer(server, newNodeServer(zfsName))
 
 	glog.Infof("Listening for connections on address: %#v", listener.Addr())
 

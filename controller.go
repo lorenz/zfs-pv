@@ -2,15 +2,17 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/lorenz/go-libzfs"
 	"github.com/container-storage-interface/spec/lib/go/csi/v0"
+	"github.com/lorenz/go-libzfs"
 )
 
 func shouldEscape(c byte) bool {
@@ -53,11 +55,20 @@ func zfsDatasetEscape(s string) string {
 	return string(t)
 }
 
-func getZFSPath(volumeID string) string {
-	return fmt.Sprintf("TESTPOOL/%v", volumeID)
+func (cs *controllerServer) getZFSPath(volumeID string) string {
+	return path.Join(cs.prefix, volumeID)
 }
 
 type controllerServer struct {
+	zpool  string
+	prefix string
+}
+
+func newControllerServer(zfsName string) *controllerServer {
+	return &controllerServer{
+		zpool:  strings.Split(zfsName, "/")[0],
+		prefix: zfsName,
+	}
 }
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -120,7 +131,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	// Props to do:  primarycache, secondarycache, sync
 	volumeID := zfsDatasetEscape(req.Name)
-	identifier := getZFSPath(volumeID)
+	identifier := cs.getZFSPath(volumeID)
 	glog.V(4).Infof("Creating volume %s", volumeID)
 	newDataset, err := zfs.DatasetCreate(identifier, datasetType, props)
 	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.EExists {
@@ -164,7 +175,7 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	}
 
 	volumeID := req.VolumeId
-	dataset, err := zfs.DatasetOpen(getZFSPath(volumeID))
+	dataset, err := zfs.DatasetOpen(cs.getZFSPath(volumeID))
 	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
 		return &csi.DeleteVolumeResponse{}, nil
 	} else if err != nil {
@@ -199,7 +210,7 @@ func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req 
 
 	volumeID := req.VolumeId
 
-	dataset, err := zfs.DatasetOpen(getZFSPath(volumeID))
+	dataset, err := zfs.DatasetOpen(cs.getZFSPath(volumeID))
 	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("Volume %v doesn't exist", volumeID))
 	} else if err != nil {

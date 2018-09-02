@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"syscall"
 
@@ -33,6 +34,19 @@ import (
 )
 
 type nodeServer struct {
+	zpool  string
+	prefix string
+}
+
+func newNodeServer(zfsName string) *nodeServer {
+	return &nodeServer{
+		zpool:  strings.Split(zfsName, "/")[0],
+		prefix: zfsName,
+	}
+}
+
+func (ns *nodeServer) getZFSPath(volumeID string) string {
+	return path.Join(ns.prefix, volumeID)
 }
 
 func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -60,7 +74,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		mountflags = mountflags | syscall.MS_RDONLY
 	}
 
-	dataset, err := zfs.DatasetOpen(getZFSPath(volumeID))
+	dataset, err := zfs.DatasetOpen(ns.getZFSPath(volumeID))
 	if err != nil && err.(*zfs.Error).Errno() == zfs.ENoent {
 		return nil, status.Error(codes.NotFound, "Volume does not exist")
 	} else if err != nil {
@@ -99,7 +113,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		source := line[:firstSpace]
 
 		if escapedMountPath == targetPath {
-			if source != getZFSPath(volumeID) {
+			if source != ns.getZFSPath(volumeID) {
 				return nil, status.Errorf(codes.FailedPrecondition, "Target path already has %v mounted", source)
 			} else {
 				// TODO: Validate flag equivalence
@@ -133,7 +147,7 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	glog.V(4).Infof("Volume %v has been unmounted", targetPath, volumeID)
+	glog.V(4).Infof("Volume %v has been unmounted from %v", volumeID, targetPath)
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
@@ -153,7 +167,7 @@ func (ns *nodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetC
 }
 
 func (ns *nodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	zpool, err := zfs.PoolOpen("TESTPOOL")
+	zpool, err := zfs.PoolOpen(ns.zpool)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to open pool: %v", err))
 	}
@@ -168,7 +182,7 @@ func (ns *nodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoReque
 }
 
 func (ns *nodeServer) NodeGetId(ctx context.Context, req *csi.NodeGetIdRequest) (*csi.NodeGetIdResponse, error) {
-	zpool, err := zfs.PoolOpen("TESTPOOL")
+	zpool, err := zfs.PoolOpen(ns.zpool)
 	if err != nil {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to open pool: %v", err))
 	}
