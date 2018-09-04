@@ -18,7 +18,6 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"os"
 	"path"
 	"strings"
@@ -167,14 +166,9 @@ func (ns *nodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetC
 }
 
 func (ns *nodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	zpool, err := zfs.PoolOpen(ns.zpool)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to open pool: %v", err))
-	}
-	defer zpool.Close()
 
 	return &csi.NodeGetInfoResponse{
-		NodeId: zpool.Properties[zfs.PoolPropGUID].Value,
+		NodeId: os.Getenv("KUBE_NODE_NAME"),
 		AccessibleTopology: &csi.Topology{
 			Segments: map[string]string{},
 		},
@@ -182,14 +176,8 @@ func (ns *nodeServer) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoReque
 }
 
 func (ns *nodeServer) NodeGetId(ctx context.Context, req *csi.NodeGetIdRequest) (*csi.NodeGetIdResponse, error) {
-	zpool, err := zfs.PoolOpen(ns.zpool)
-	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("Failed to open pool: %v", err))
-	}
-	defer zpool.Close()
-
 	return &csi.NodeGetIdResponse{
-		NodeId: zpool.Properties[zfs.PoolPropGUID].Value,
+		NodeId: os.Getenv("KUBE_NODE_NAME"),
 	}, nil
 }
 

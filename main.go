@@ -35,6 +35,8 @@ func main() {
 		glog.Fatalf("Required ZFS name is empty")
 	}
 
+	os.Remove(os.Getenv("CSI_ENDPOINT"))
+
 	listener, err := net.Listen("unix", os.Getenv("CSI_ENDPOINT"))
 	if err != nil {
 		glog.Fatalf("Failed to listen: %v", err)
