@@ -1,0 +1,17 @@
+build:
+  stage: build
+  image: go:1.11
+  variables:
+    CGO_ENABLED: "0"
+  script:
+    - go build --ldflags="-w -s" -mod=readonly
+  artifacts:
+    paths:
+      - zfs-csi-driver
+    expire_in: 30 days
+
+test:
+  stage: test
+  image: go:1.11
+  script:
+    - go test
