@@ -1,6 +1,6 @@
 build:
   stage: build
-  image: go:1.11
+  image: golang:1.11
   variables:
     CGO_ENABLED: "0"
   script:
@@ -12,6 +12,6 @@ build:
 
 test:
   stage: test
-  image: go:1.11
+  image: golang:1.11
   script:
     - go test
