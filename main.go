@@ -17,8 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
 	"path"
 	"time"
 
@@ -79,7 +81,32 @@ func zfsDatasetEscape(s string) string {
 
 func main() {
 	kubeconfig := flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+
+	if len(os.Args) < 2 {
+		fmt.Println("zfs-volume-provider requires a subcommand")
+		os.Exit(1)
+	}
+
 	flag.Parse()
+
+	switch os.Args[1] {
+	case "init":
+		json.NewEncoder(os.Stdout).Encode(Init())
+		return
+	case "mount":
+		path := os.Args[2]
+		var specs map[string]string
+		json.Unmarshal([]byte(os.Args[3]), &specs)
+		json.NewEncoder(os.Stdout).Encode(Mount(path, specs))
+		return
+	case "unmount":
+		path := os.Args[2]
+		json.NewEncoder(os.Stdout).Encode(Unmount(path))
+		return
+	case "attach", "detach", "waitforattach", "isattached", "mountdevice", "unmountdevice":
+		json.NewEncoder(os.Stdout).Encode(Unsupported())
+		return
+	}
 
 	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
@@ -87,7 +114,10 @@ func main() {
 		panic(err.Error())
 	}
 
-	node := "black"
+	node, err := os.Hostname()
+	if err != nil {
+		panic(err)
+	}
 
 	// creates the clientset
 	clientset, err := kubernetes.NewForConfig(config)
@@ -245,6 +275,29 @@ func discoverClasses() map[string]string {
 	return classMap
 }
 
+func getVolByGUID(guid string) string {
+	datasets, err := zfs.DatasetOpenAll()
+	if err != nil {
+		glog.Fatalf("Failed to list ZFS datasets to find GUID: %v", err)
+	}
+	defer zfs.DatasetCloseAll(datasets)
+
+	for _, d := range datasets {
+		path, err := d.Path()
+		if err != nil {
+			panic(err.Error())
+		}
+		p, err := d.GetProperty(zfs.DatasetPropGUID)
+		if err != nil {
+			panic(err)
+		}
+		if p.Value == guid {
+			return path
+		}
+	}
+	return ""
+}
+
 func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.PersistentVolume, error) {
 	props := make(map[zfs.Prop]zfs.Property)
 
@@ -287,6 +340,8 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 		props[zfs.DatasetPropLogbias] = zfs.Property{Value: logbias}
 	}
 
+	props[zfs.DatasetPropMountpoint] = zfs.Property{Value: "legacy"} // We're managing the volume lifecyle
+
 	// Props to do:  primarycache, secondarycache, sync
 	volumeID := zfsDatasetEscape(pvc.Name)
 	identifier := path.Join(prefix, volumeID)
@@ -313,8 +368,10 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 					},
 					PersistentVolumeSource: v1.PersistentVolumeSource{
 						FlexVolume: &v1.FlexPersistentVolumeSource{
-							Driver:  "dolansoft.org/zfs",
-							Options: map[string]string{},
+							Driver: "dolansoft.org/zfs",
+							Options: map[string]string{
+								"guid": dataset.Properties[zfs.DatasetPropGUID].Value,
+							},
 						},
 					},
 				},
@@ -326,7 +383,7 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 	} else if err != nil {
 		return nil, fmt.Errorf("Volume creation failed with unexpected error: %v", err)
 	}
-	newDataset.Close()
+	defer newDataset.Close()
 	return &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: volumeID,
@@ -338,8 +395,10 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 			},
 			PersistentVolumeSource: v1.PersistentVolumeSource{
 				FlexVolume: &v1.FlexPersistentVolumeSource{
-					Driver:  "dolansoft.org/zfs",
-					Options: map[string]string{},
+					Driver: "dolansoft.org/zfs",
+					Options: map[string]string{
+						"guid": newDataset.Properties[zfs.DatasetPropGUID].Value,
+					},
 				},
 			},
 		},
