@@ -72,7 +72,7 @@ func getVolByGUID(guid string) string {
 func getDatasetByToken(token string) string {
 	datasets, err := zfs.DatasetOpenAll()
 	if err != nil {
-		glog.Fatalf("Failed to list ZFS datasets to find GUID: %v", err)
+		glog.Fatalf("Failed to list ZFS datasets to find Adoption Token: %v", err)
 	}
 	defer zfs.DatasetCloseAll(datasets)
 
@@ -89,6 +89,7 @@ func getDatasetByTokenSubtree(token string, datasets []zfs.Dataset) string {
 		if err != nil {
 			panic(err)
 		}
+
 		if p.Value == token && p.Value != "-" && p.Source == "local" {
 			return path
 		}

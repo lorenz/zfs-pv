@@ -114,7 +114,7 @@ func main() {
 	pvInformer := informerFactory.Core().V1().PersistentVolumes().Informer()
 	isOurs := func(pvc *v1.PersistentVolumeClaim) bool {
 		return pvc.ObjectMeta.Annotations["volume.beta.kubernetes.io/storage-provisioner"] == "dolansoft.org/zfs" &&
-			pvc.ObjectMeta.Annotations["volume.kubernetes.io/selected-node"] == node
+			(pvc.ObjectMeta.Annotations["volume.kubernetes.io/selected-node"] == node || pvc.ObjectMeta.Annotations["zfs.dolansoft.org/adoption-token"] != "")
 	}
 
 	isOurPV := func(pv *v1.PersistentVolume) bool {
@@ -143,7 +143,17 @@ func main() {
 			panic(err) // TODO: handling
 		}
 
-		vol, err := provisionVolume(pvc, storageClasses)
+		var vol *v1.PersistentVolume
+
+		if pvc.ObjectMeta.Annotations["zfs.dolansoft.org/adoption-token"] != "" {
+			vol, err = adoptVolume(pvc, storageClasses)
+			if vol == nil {
+				glog.V(3).Infof("We don't have the volume to adopt")
+				return // We don't have that volume, let others do their thing
+			}
+		} else {
+			vol, err = provisionVolume(pvc, storageClasses)
+		}
 		if err != nil {
 			panic(err) // TODO: handling
 		}
@@ -328,6 +338,64 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 					Driver: "dolansoft.org/zfs",
 					Options: map[string]string{
 						"guid": newDataset.Properties[zfs.DatasetPropGUID].Value,
+					},
+				},
+			},
+		},
+	}, nil
+}
+
+func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.PersistentVolume, error) {
+	volumeID := "pvc-" + string(pvc.ObjectMeta.UID)
+	prefix, ok := classes[*pvc.Spec.StorageClassName]
+	if !ok {
+		return nil, fmt.Errorf("Storage class %v is not available on this host", pvc.Spec.StorageClassName)
+	}
+
+	originalPath := getDatasetByToken(pvc.ObjectMeta.Annotations["zfs.dolansoft.org/adoption-token"])
+
+	if originalPath == "" {
+		return nil, nil // We don't have the volume
+	}
+
+	storageReq := pvc.Spec.Resources.Requests[v1.ResourceStorage]
+	if storageReq.IsZero() {
+		return nil, fmt.Errorf("PVC is not requesting any storage, this is not supported")
+	}
+
+	dataset, err := zfs.DatasetOpen(originalPath)
+	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("Volume opening failed with unexpected error: %v", err)
+	}
+	defer dataset.Close()
+	if mounted, _ := dataset.IsMounted(); mounted {
+		dataset.Unmount(0)
+		if err := dataset.SetProperty(zfs.DatasetPropMountpoint, "legacy"); err != nil { // Disable mounting of the dataset
+			return nil, fmt.Errorf("Failed to disable ZFS automount: %v", err)
+		}
+	}
+	if err := dataset.Rename(path.Join(prefix, volumeID), false, false); err != nil {
+		return nil, fmt.Errorf("Failed to rename ZFS dataset: %v", err)
+	}
+
+	glog.V(3).Infof("Successfully adopted dataset %v", volumeID)
+
+	return &v1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: volumeID,
+		},
+		Spec: v1.PersistentVolumeSpec{
+			AccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
+			Capacity: v1.ResourceList{
+				v1.ResourceStorage: storageReq, // We're always giving the exact amount
+			},
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				FlexVolume: &v1.FlexPersistentVolumeSource{
+					Driver: "dolansoft.org/zfs",
+					Options: map[string]string{
+						"guid": dataset.Properties[zfs.DatasetPropGUID].Value,
 					},
 				},
 			},
