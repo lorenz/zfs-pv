@@ -82,30 +82,27 @@ func zfsDatasetEscape(s string) string {
 func main() {
 	kubeconfig := flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 
-	if len(os.Args) < 2 {
-		fmt.Println("zfs-volume-provider requires a subcommand")
-		os.Exit(1)
-	}
-
 	flag.Parse()
 
-	switch os.Args[1] {
-	case "init":
-		json.NewEncoder(os.Stdout).Encode(Init())
-		return
-	case "mount":
-		path := os.Args[2]
-		var specs map[string]string
-		json.Unmarshal([]byte(os.Args[3]), &specs)
-		json.NewEncoder(os.Stdout).Encode(Mount(path, specs))
-		return
-	case "unmount":
-		path := os.Args[2]
-		json.NewEncoder(os.Stdout).Encode(Unmount(path))
-		return
-	case "attach", "detach", "waitforattach", "isattached", "mountdevice", "unmountdevice":
-		json.NewEncoder(os.Stdout).Encode(Unsupported())
-		return
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "init":
+			json.NewEncoder(os.Stdout).Encode(Init())
+			return
+		case "mount":
+			path := os.Args[2]
+			var specs map[string]string
+			json.Unmarshal([]byte(os.Args[3]), &specs)
+			json.NewEncoder(os.Stdout).Encode(Mount(path, specs))
+			return
+		case "unmount":
+			path := os.Args[2]
+			json.NewEncoder(os.Stdout).Encode(Unmount(path))
+			return
+		case "attach", "detach", "waitforattach", "isattached", "mountdevice", "unmountdevice":
+			json.NewEncoder(os.Stdout).Encode(Unsupported())
+			return
+		}
 	}
 
 	// use the current context in kubeconfig
@@ -138,7 +135,7 @@ func main() {
 
 	isOurPV := func(pv *v1.PersistentVolume) bool {
 		return pv.ObjectMeta.Annotations["pv.kubernetes.io/provisioned-by"] == "dolansoft.org/zfs" &&
-			pv.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchFields[0].Values[0] == node
+			pv.Spec.NodeAffinity.Required.NodeSelectorTerms[0].MatchExpressions[0].Values[0] == node
 	}
 
 	processPVC := func(pvc *v1.PersistentVolumeClaim) {
@@ -171,9 +168,9 @@ func main() {
 			Required: &v1.NodeSelector{
 				NodeSelectorTerms: []v1.NodeSelectorTerm{
 					{
-						MatchFields: []v1.NodeSelectorRequirement{
+						MatchExpressions: []v1.NodeSelectorRequirement{
 							{
-								Key:      "metadata.name",
+								Key:      "kubernetes.io/hostname",
 								Operator: v1.NodeSelectorOpIn,
 								Values:   []string{node},
 							},
@@ -247,14 +244,7 @@ func main() {
 	pvcInformer.Run(stopper)
 }
 
-func discoverClasses() map[string]string {
-	datasets, err := zfs.DatasetOpenAll()
-	classMap := make(map[string]string)
-	if err != nil {
-		glog.Fatalf("Failed to list ZFS datasets for discovery: %v", err)
-	}
-	defer zfs.DatasetCloseAll(datasets)
-
+func discoverSubtree(datasets []zfs.Dataset, classMap map[string]string) {
 	for _, d := range datasets {
 		path, err := d.Path()
 		if err != nil {
@@ -264,24 +254,31 @@ func discoverClasses() map[string]string {
 		if err != nil {
 			panic(err)
 		}
-		if p.Value != "-" {
+		glog.V(5).Infof("Looking at ZFS volume %v with class %v", path, p.Value)
+		if p.Value != "-" && p.Source == "local" {
 			if _, ok := classMap[p.Value]; ok {
 				glog.Fatalf("Found duplicate class %v on %v and %v, this is unsupported", p.Value, classMap[p.Value], path)
 			}
 			classMap[p.Value] = path
 		}
+		discoverSubtree(d.Children, classMap)
 	}
+}
+
+func discoverClasses() map[string]string {
+	datasets, err := zfs.DatasetOpenAll()
+	classMap := make(map[string]string)
+	if err != nil {
+		glog.Fatalf("Failed to list ZFS datasets for discovery: %v", err)
+	}
+	defer zfs.DatasetCloseAll(datasets)
+
+	discoverSubtree(datasets, classMap)
 
 	return classMap
 }
 
-func getVolByGUID(guid string) string {
-	datasets, err := zfs.DatasetOpenAll()
-	if err != nil {
-		glog.Fatalf("Failed to list ZFS datasets to find GUID: %v", err)
-	}
-	defer zfs.DatasetCloseAll(datasets)
-
+func getVolByGUIDSubtree(datasets []zfs.Dataset, guid string) string {
 	for _, d := range datasets {
 		path, err := d.Path()
 		if err != nil {
@@ -294,8 +291,21 @@ func getVolByGUID(guid string) string {
 		if p.Value == guid {
 			return path
 		}
+		if subpath := getVolByGUIDSubtree(d.Children, guid); subpath != "" {
+			return subpath
+		}
 	}
 	return ""
+}
+
+func getVolByGUID(guid string) string {
+	datasets, err := zfs.DatasetOpenAll()
+	if err != nil {
+		glog.Fatalf("Failed to list ZFS datasets to find GUID: %v", err)
+	}
+	defer zfs.DatasetCloseAll(datasets)
+
+	return getVolByGUIDSubtree(datasets, guid)
 }
 
 func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.PersistentVolume, error) {
@@ -303,7 +313,7 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 
 	prefix, ok := classes[*pvc.Spec.StorageClassName]
 	if !ok {
-		return nil, fmt.Errorf("Storage class %v is not available on this host", pvc.Spec.StorageClassName)
+		return nil, fmt.Errorf("Storage class %v is not available on this host", *pvc.Spec.StorageClassName)
 	}
 
 	var datasetType zfs.DatasetType
