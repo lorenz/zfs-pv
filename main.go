@@ -353,7 +353,7 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 	props[zfs.DatasetPropMountpoint] = zfs.Property{Value: "legacy"} // We're managing the volume lifecyle
 
 	// Props to do:  primarycache, secondarycache, sync
-	volumeID := zfsDatasetEscape(pvc.Name)
+	volumeID := "pvc-" + string(pvc.ObjectMeta.UID)
 	identifier := path.Join(prefix, volumeID)
 	glog.V(3).Infof("Creating volume %v at %v", volumeID, identifier)
 	newDataset, err := zfs.DatasetCreate(identifier, datasetType, props)
