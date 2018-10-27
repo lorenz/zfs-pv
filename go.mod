@@ -1,4 +1,4 @@
-module git.dolansoft.org/dolansoft/zfs-csi-driver
+module git.dolansoft.org/dolansoft/zfs-pv
 
 require (
 	github.com/container-storage-interface/spec v0.3.0
