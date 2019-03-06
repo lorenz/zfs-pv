@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
+	zfs "git.dolansoft.org/lorenz/go-zfs/ioctl"
 	"github.com/golang/glog"
-	zfs "github.com/lorenz/go-libzfs"
 )
 
 // From k8s.io/pkg/volume/flexvolume/driver-call.go
@@ -52,27 +55,28 @@ func Init() *DriverStatus {
 }
 
 func Mount(path string, specs map[string]string) *DriverStatus {
-	zvol := getVolByGUID(specs["guid"])
-	if zvol == "" {
-		return &DriverStatus{
-			Status:  "Failure",
-			Message: fmt.Sprintf("Failed to find volume for GUID %v", specs["guid"]),
+	var cursor uint64
+	var zvol string
+	for {
+		var props zfs.DatasetPropsWithSource
+		var err error
+		zvol, cursor, _, props, err = zfs.DatasetListNext("", cursor)
+		if err == unix.ESRCH {
+			return &DriverStatus{
+				Status:  "Failure",
+				Message: fmt.Sprintf("Failed to find volume for GUID %v", specs["guid"]),
+			}
+		}
+		if strconv.FormatUint(props["guid"].Value.(uint64), 10) == specs["guid"] {
+			break
 		}
 	}
+
 	var mountflags uintptr = syscall.MS_NODEV | syscall.MS_NOSUID
 
 	if specs["kubernetes.io/readwrite"] == "ro" {
 		mountflags = mountflags | syscall.MS_RDONLY
 	}
-
-	dataset, err := zfs.DatasetOpen(zvol)
-	if err != nil {
-		return &DriverStatus{
-			Status:  "Failure",
-			Message: fmt.Sprintf("Failed to find volume for GUID %v", specs["guid"]),
-		}
-	}
-	defer dataset.Close()
 
 	// TODO: This is technically a race (mount check is not atomic with mount), needs some kind of locking
 
