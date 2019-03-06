@@ -1,6 +1,8 @@
 package main
 
 import (
+	"golang.org/x/sys/unix"
+	"strconv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,10 +10,9 @@ import (
 	"path"
 	"time"
 
-	"gopkg.in/inf.v0"
-
 	"github.com/golang/glog"
-	zfs "github.com/lorenz/go-libzfs"
+	"github.com/moby/moby/pkg/mount"
+	zfs "git.dolansoft.org/lorenz/go-zfs/ioctl"
 	"k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -239,38 +240,47 @@ func main() {
 }
 
 func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.PersistentVolume, error) {
-	props := make(map[zfs.Prop]zfs.Property)
+	props := make(zfs.DatasetProps)
 
 	prefix, ok := classes[*pvc.Spec.StorageClassName]
 	if !ok {
 		return nil, fmt.Errorf("Storage class %v is not available on this host", *pvc.Spec.StorageClassName)
 	}
 
-	var datasetType zfs.DatasetType
+	var datasetType zfs.ObjectType
 
 	storageReq := pvc.Spec.Resources.Requests[v1.ResourceStorage]
 	if storageReq.IsZero() {
 		return nil, fmt.Errorf("PVC is not requesting any storage, this is not supported")
 	}
-	capacity := storageReq.AsDec() // ZFS and K8s can handle volumes over 2^64 bytes in size, so don't convert to u64
+	capacity, ok := storageReq.AsInt64()
+	if !ok {
+		return nil, fmt.Errorf("PVC requesting more than 2^63 bytes of storage, this is not supported")
+	}
 	if *pvc.Spec.VolumeMode == v1.PersistentVolumeBlock {
-		datasetType = zfs.DatasetTypeVolume
-		props[zfs.DatasetPropVolsize] = zfs.Property{Value: capacity.String()}
+		datasetType = zfs.ObjectTypeZvol
+		props["volsize"] = uint64(capacity)
 		if volblocksize, ok := pvc.Annotations["zfs.dolansoft.org/volblocksize"]; ok {
-			props[zfs.DatasetPropVolblocksize] = zfs.Property{Value: volblocksize}
+			if volBlockSizeInt, err := strconv.ParseUint(volblocksize, 10, 64); err != nil {
+				props["volblocksize"] = volBlockSizeInt
+			}
 		}
 	} else {
-		datasetType = zfs.DatasetTypeFilesystem
-		props[zfs.DatasetPropQuota] = zfs.Property{Value: capacity.String()}
+		datasetType = zfs.ObjectTypeZFS
+		props["quota"] = uint64(capacity)
 		if recordsize, ok := pvc.Annotations["zfs.dolansoft.org/recordsize"]; ok {
-			props[zfs.DatasetPropRecordsize] = zfs.Property{Value: recordsize}
+			if recordsizeInt, err := strconv.ParseUint(recordsize, 10, 64); err != nil {
+				props["recordsize"] = recordsizeInt
+			}
 		}
 		if atime, ok := pvc.Annotations["zfs.dolansoft.org/atime"]; ok {
-			props[zfs.DatasetPropAtime] = zfs.Property{Value: atime}
+			if atimeInt, err := strconv.ParseUint(atime, 10, 64); err != nil {
+				props["atime"] = atimeInt
+			}
 		}
 	}
 
-	if compression, ok := pvc.Annotations["zfs.dolansoft.org/compression"]; ok {
+	/*if compression, ok := pvc.Annotations["zfs.dolansoft.org/compression"]; ok {
 		props[zfs.DatasetPropCompression] = zfs.Property{Value: compression}
 	} else { // Default to lz4 because it is a better default than ZFS's off
 		props[zfs.DatasetPropCompression] = zfs.Property{Value: "lz4"}
@@ -278,24 +288,27 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 
 	if logbias, ok := pvc.Annotations["zfs.dolansoft.org/logbias"]; ok {
 		props[zfs.DatasetPropLogbias] = zfs.Property{Value: logbias}
-	}
+	}*/
 
-	props[zfs.DatasetPropMountpoint] = zfs.Property{Value: "legacy"} // We're managing the volume lifecyle
+	props["mountpoint"] = "legacy" // Don't let a normal userspace touch this
 
 	// Props to do:  primarycache, secondarycache, sync
 	volumeID := "pvc-" + string(pvc.ObjectMeta.UID)
 	identifier := path.Join(prefix, volumeID)
 	glog.V(3).Infof("Creating volume %v at %v", volumeID, identifier)
-	newDataset, err := zfs.DatasetCreate(identifier, datasetType, props)
-	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.EExists {
-		dataset, err := zfs.DatasetOpen(identifier)
+	err := zfs.Create(identifier, datasetType, &props)
+	_, _, _, newDataset, getErr := zfs.DatasetListNext(identifier, 0)
+
+	if getErr != nil {
 		if err != nil {
-			return nil, fmt.Errorf("Failed to get size of preexisting volume: %v", err)
+			return nil, fmt.Errorf("Failed to create ZFS volume: %v", err)
 		}
-		defer dataset.Close()
-		d := new(inf.Dec)
-		glog.V(3).Infof("Existing volume has size %+v, requesting %v", dataset.Properties, capacity.String())
-		if val, _ := d.SetString(dataset.Properties[zfs.DatasetPropQuota].Value); val.Cmp(capacity) == 0 { // TODO: Block devices
+		return nil, fmt.Errorf("Volume successfully created but not gettable: %v", getErr)
+	}
+
+	if err == unix.EEXIST {
+		glog.V(3).Infof("Existing volume has size %v, requesting %v", newDataset["quota"].Value.(uint64), capacity)
+		if newDataset["quota"].Value.(uint64) == uint64(capacity) { // TODO: Block devices
 			glog.V(3).Infof("Equivalent volume %s already exists", volumeID)
 			return &v1.PersistentVolume{
 				ObjectMeta: metav1.ObjectMeta{
@@ -310,7 +323,7 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 						FlexVolume: &v1.FlexPersistentVolumeSource{
 							Driver: "dolansoft.org/zfs",
 							Options: map[string]string{
-								"guid": dataset.Properties[zfs.DatasetPropGUID].Value,
+								"guid": strconv.FormatUint(newDataset["guid"].Value.(uint64), 10),
 							},
 						},
 					},
@@ -323,7 +336,6 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 	} else if err != nil {
 		return nil, fmt.Errorf("Volume creation failed with unexpected error: %v", err)
 	}
-	defer newDataset.Close()
 	return &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: volumeID,
@@ -337,7 +349,7 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 				FlexVolume: &v1.FlexPersistentVolumeSource{
 					Driver: "dolansoft.org/zfs",
 					Options: map[string]string{
-						"guid": newDataset.Properties[zfs.DatasetPropGUID].Value,
+						"guid": strconv.FormatUint(newDataset["guid"].Value.(uint64), 10),
 					},
 				},
 			},
@@ -352,10 +364,21 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 		return nil, fmt.Errorf("Storage class %v is not available on this host", pvc.Spec.StorageClassName)
 	}
 
-	originalPath := getDatasetByToken(pvc.ObjectMeta.Annotations["zfs.dolansoft.org/adoption-token"])
-
-	if originalPath == "" {
-		return nil, nil // We don't have the volume
+	token := pvc.ObjectMeta.Annotations["zfs.dolansoft.org/adoption-token"]
+	var cursor uint64
+	var oldName string
+	var props zfs.DatasetPropsWithSource
+	for {	
+		var err error
+		oldName, cursor, _, props, err = zfs.DatasetListNext("", cursor)
+		if err == unix.ESRCH {
+			return nil, fmt.Errorf("Failed to find volume for adoption token %v", token)
+		}
+		if tokenProp, ok := props["dolansoft-zfs:adoption-token"]; ok {
+			if tokenProp.Value.(string) == token {
+				break
+			}
+		}
 	}
 
 	storageReq := pvc.Spec.Resources.Requests[v1.ResourceStorage]
@@ -363,20 +386,24 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 		return nil, fmt.Errorf("PVC is not requesting any storage, this is not supported")
 	}
 
-	dataset, err := zfs.DatasetOpen(originalPath)
-	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
-		return nil, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("Volume opening failed with unexpected error: %v", err)
+	if err := zfs.SetProp(oldName, map[string]interface{}{"mountpoint": "legacy"}, zfs.PropSourceDefault); err != nil {
+		return nil, fmt.Errorf("Failed to set mountpoint legacy")
 	}
-	defer dataset.Close()
-	if mounted, _ := dataset.IsMounted(); mounted {
-		dataset.Unmount(0)
-		if err := dataset.SetProperty(zfs.DatasetPropMountpoint, "legacy"); err != nil { // Disable mounting of the dataset
-			return nil, fmt.Errorf("Failed to disable ZFS automount: %v", err)
+
+	mounts, err := mount.GetMounts(func(m *mount.Info) (bool, bool) {
+		if m.Source == oldName {
+			return false, false // don't skip, keep going
+		}
+		return true, false // skip, keep going
+	})
+
+	for _, m := range mounts {
+		if err := unix.Unmount(m.Mountpoint, 0); err != nil {
+			return nil, fmt.Errorf("Failed to unmount volume %v from %v for adoption", oldName, m.Mountpoint)
 		}
 	}
-	if err := dataset.Rename(path.Join(prefix, volumeID), false, false); err != nil {
+
+	if err := zfs.Rename(oldName, path.Join(prefix, volumeID), false); err != nil {
 		return nil, fmt.Errorf("Failed to rename ZFS dataset: %v", err)
 	}
 
@@ -395,7 +422,7 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 				FlexVolume: &v1.FlexPersistentVolumeSource{
 					Driver: "dolansoft.org/zfs",
 					Options: map[string]string{
-						"guid": dataset.Properties[zfs.DatasetPropGUID].Value,
+						"guid": strconv.FormatUint(props["guid"].Value.(uint64), 10),
 					},
 				},
 			},
@@ -411,23 +438,16 @@ func deleteVolume(pv v1.PersistentVolume, classes map[string]string) (bool, erro
 		return false, fmt.Errorf("Storage class %v is not available on this host", pv.Spec.StorageClassName)
 	}
 
-	dataset, err := zfs.DatasetOpen(path.Join(prefix, volumeID))
-	if zerr, ok := err.(*zfs.Error); ok && zerr.Errno() == zfs.ENoent {
+	name := path.Join(prefix, volumeID)
+	_, _, _, props, err := zfs.DatasetListNext(name, 0)
+	if err == unix.ESRCH {
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("Volume opening failed with unexpected error: %v", err)
 	}
-	defer dataset.Close()
-
-	if mounted, _ := dataset.IsMounted(); mounted {
-		if err := dataset.Unmount(0); err != nil {
-			return false, fmt.Errorf("Volume unmount failed with unexpected error: %v", err)
-		}
-	}
 
 	glog.V(3).Infof("Destroying volume %s", volumeID)
-	err = dataset.Destroy(false)
-	if err != nil {
+	if err := zfs.Destroy(name, zfs.ObjectTypeAny, false); err != nil {
 		return false, fmt.Errorf("Volume deletion failed with unexpected error: %v", err)
 	}
 

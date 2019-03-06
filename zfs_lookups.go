@@ -38,34 +38,3 @@ func discoverClasses() map[string]string {
 
 	return classMap
 }
-
-func getDatasetByToken(token string) string {
-	datasets, err := zfs.DatasetOpenAll()
-	if err != nil {
-		glog.Fatalf("Failed to list ZFS datasets to find Adoption Token: %v", err)
-	}
-	defer zfs.DatasetCloseAll(datasets)
-
-	return getDatasetByTokenSubtree(token, datasets)
-}
-
-func getDatasetByTokenSubtree(token string, datasets []zfs.Dataset) string {
-	for _, d := range datasets {
-		path, err := d.Path()
-		if err != nil {
-			panic(err.Error())
-		}
-		p, err := d.GetUserProperty("dolansoft-zfs:adoption-token")
-		if err != nil {
-			panic(err)
-		}
-
-		if p.Value == token && p.Value != "-" && p.Source == "local" {
-			return path
-		}
-		if subd := getDatasetByTokenSubtree(token, d.Children); subd != "" {
-			return subd
-		}
-	}
-	return ""
-}
