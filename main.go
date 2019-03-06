@@ -69,6 +69,8 @@ func main() {
 
 	flag.Parse()
 
+	zfs.Init("") // Grab a ZFS Fd
+
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
 		case "init":
@@ -374,8 +376,8 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 		if err == unix.ESRCH {
 			return nil, fmt.Errorf("Failed to find volume for adoption token %v", token)
 		}
-		if tokenProp, ok := props["dolansoft-zfs:adoption-token"]; ok {
-			if tokenProp.Value.(string) == token {
+		if tokenProp, ok := props["dolansoft-zfs:adoption-token"]; ok{
+			if tokenProp.Value.(string) == token && tokenProp.Source == "local" {
 				break
 			}
 		}
@@ -396,6 +398,9 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 		}
 		return true, false // skip, keep going
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	for _, m := range mounts {
 		if err := unix.Unmount(m.Mountpoint, 0); err != nil {
@@ -439,7 +444,7 @@ func deleteVolume(pv v1.PersistentVolume, classes map[string]string) (bool, erro
 	}
 
 	name := path.Join(prefix, volumeID)
-	_, _, _, props, err := zfs.DatasetListNext(name, 0)
+	_, _, _, _, err := zfs.DatasetListNext(name, 0)
 	if err == unix.ESRCH {
 		return false, nil
 	} else if err != nil {
