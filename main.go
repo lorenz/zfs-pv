@@ -299,7 +299,7 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 	identifier := path.Join(prefix, volumeID)
 	glog.V(3).Infof("Creating volume %v at %v", volumeID, identifier)
 	err := zfs.Create(identifier, datasetType, &props)
-	_, _, _, newDataset, getErr := zfs.DatasetListNext(identifier, 0)
+	newDataset, getErr := zfs.ObjsetStats(identifier)
 
 	if getErr != nil {
 		if err != nil {
@@ -367,21 +367,27 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 	}
 
 	token := pvc.ObjectMeta.Annotations["zfs.dolansoft.org/adoption-token"]
-	var cursor uint64
-	var oldName string
-	var props zfs.DatasetPropsWithSource
-	for {	
-		var err error
-		oldName, cursor, _, props, err = zfs.DatasetListNext("", cursor)
-		if err == unix.ESRCH {
-			return nil, fmt.Errorf("Failed to find volume for adoption token %v", token)
-		}
+
+	var guid uint64
+
+	datasetsWithToken, err := listAndFilterDatasets(func(name string, props zfs.DatasetPropsWithSource) (bool, bool) {
 		if tokenProp, ok := props["dolansoft-zfs:adoption-token"]; ok{
 			if tokenProp.Value.(string) == token && tokenProp.Source == "local" {
-				break
+				guid = props["guid"].Value.(uint64)
+				return true, true // Add and continue
 			}
 		}
+		return true, false // Don't add anything to the result set, continue always
+	})
+
+	if len(datasetsWithToken) == 0 {
+		return nil, fmt.Errorf("Failed to find volume for adoption token %v", token)
 	}
+	if len(datasetsWithToken) > 1 {
+		return nil, fmt.Errorf("More than one volume for for adoption token %v, refusing", token)
+	}
+
+	oldName := datasetsWithToken[0]
 
 	storageReq := pvc.Spec.Resources.Requests[v1.ResourceStorage]
 	if storageReq.IsZero() {
@@ -427,7 +433,7 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 				FlexVolume: &v1.FlexPersistentVolumeSource{
 					Driver: "dolansoft.org/zfs",
 					Options: map[string]string{
-						"guid": strconv.FormatUint(props["guid"].Value.(uint64), 10),
+						"guid": strconv.FormatUint(guid, 10),
 					},
 				},
 			},
@@ -444,7 +450,7 @@ func deleteVolume(pv v1.PersistentVolume, classes map[string]string) (bool, erro
 	}
 
 	name := path.Join(prefix, volumeID)
-	_, _, _, _, err := zfs.DatasetListNext(name, 0)
+	_, err := zfs.ObjsetStats(name)
 	if err == unix.ESRCH {
 		return false, nil
 	} else if err != nil {

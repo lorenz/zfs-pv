@@ -1,17 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strconv"
-	"strings"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 
 	zfs "git.dolansoft.org/lorenz/go-zfs/ioctl"
 	"github.com/golang/glog"
+	"github.com/moby/moby/pkg/mount"
 )
 
 // From k8s.io/pkg/volume/flexvolume/driver-call.go
@@ -55,22 +51,26 @@ func Init() *DriverStatus {
 }
 
 func Mount(path string, specs map[string]string) *DriverStatus {
-	var cursor uint64
-	var zvol string
-	for {
-		var props zfs.DatasetPropsWithSource
-		var err error
-		zvol, cursor, _, props, err = zfs.DatasetListNext("", cursor)
-		if err == unix.ESRCH {
-			return &DriverStatus{
-				Status:  "Failure",
-				Message: fmt.Sprintf("Failed to find volume for GUID %v", specs["guid"]),
-			}
-		}
+	datasets, err := listAndFilterDatasets(func(name string, props zfs.DatasetPropsWithSource) (bool, bool) {
 		if strconv.FormatUint(props["guid"].Value.(uint64), 10) == specs["guid"] {
-			break
+			return false, true
+		}
+		return true, false
+	})
+	if err != nil {
+		return &DriverStatus{
+			Status:  "Failure",
+			Message: fmt.Sprintf("Failed to find volume for GUID %v: %v", specs["guid"], err),
 		}
 	}
+	if len(datasets) == 0 {
+		return &DriverStatus{
+			Status:  "Failure",
+			Message: fmt.Sprintf("Failed to find volume for GUID %v", specs["guid"]),
+		}
+	}
+
+	zvol := datasets[0]
 
 	var mountflags uintptr = syscall.MS_NODEV | syscall.MS_NOSUID
 
@@ -80,53 +80,29 @@ func Mount(path string, specs map[string]string) *DriverStatus {
 
 	// TODO: This is technically a race (mount check is not atomic with mount), needs some kind of locking
 
-	mounts, err := os.Open("/proc/mounts")
-	if err != nil {
-		return &DriverStatus{
-			Status:  "Failure",
-			Message: fmt.Sprintf("Failed to access /proc/mounts: %v", err),
+	mounts, err := mount.GetMounts(func(m *mount.Info) (bool, bool) {
+		if m.Mountpoint == path {
+			return false, false // don't skip, keep going
 		}
-	}
-	defer mounts.Close()
+		return true, false // skip, keep going
+	})
 
-	scanner := bufio.NewScanner(mounts)
-	for scanner.Scan() {
-		line := scanner.Text()
-		firstSpace := strings.IndexRune(line, ' ')
-		if firstSpace == -1 {
-			glog.Errorf("Kernel violated /proc/mount spec, didn't find a space")
+	for _, mount := range mounts {
+		if mount.Source != zvol {
+			glog.Warningf("Target path for mount of %v already has %v mounted", zvol, mount.Source)
 			return &DriverStatus{
 				Status:  "Failure",
-				Message: fmt.Sprintf("Kernel violated /proc/mount spec"),
+				Message: fmt.Sprintf("Target path already has %v mounted", mount.Source),
 			}
-		}
-		secondSpace := strings.IndexRune(line[firstSpace+1:], ' ')
-		if secondSpace == -1 {
-			glog.Errorf("Kernel violated /proc/mount spec, didn't find a second space")
+		} else {
+			// TODO: Validate flag equivalence
 			return &DriverStatus{
-				Status:  "Failure",
-				Message: fmt.Sprintf("Kernel violated /proc/mount spec"),
-			}
-		}
-		escapedMountPath := line[firstSpace+1 : firstSpace+secondSpace+1] // TODO: Needs unescaping (octal)
-		source := line[:firstSpace]
-
-		if escapedMountPath == path {
-			if source != zvol {
-				glog.Warningf("Target path for mount of %v already has %v mounted", zvol, source)
-				return &DriverStatus{
-					Status:  "Failure",
-					Message: fmt.Sprintf("Target path already has %v mounted", source),
-				}
-			} else {
-				// TODO: Validate flag equivalence
-				return &DriverStatus{
-					Status:  "Success",
-					Message: fmt.Sprintf("Volume was already mounted, doing nothing"),
-				}
+				Status:  "Success",
+				Message: fmt.Sprintf("Volume was already mounted, doing nothing"),
 			}
 		}
 	}
+
 	glog.V(3).Infof("Mounting %v at target %v", zvol, path)
 
 	if err := syscall.Mount(zvol, path, "zfs", mountflags, ""); err != nil {

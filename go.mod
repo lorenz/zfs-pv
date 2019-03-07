@@ -1,7 +1,7 @@
 module git.dolansoft.org/dolansoft/zfs-pv
 
 require (
-	git.dolansoft.org/lorenz/go-zfs v0.0.0-20190306002320-13920e67ed34
+	git.dolansoft.org/lorenz/go-zfs v0.0.0-20190307012801-3ec2ec7de3c8
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/gogo/protobuf v1.1.1 // indirect
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
