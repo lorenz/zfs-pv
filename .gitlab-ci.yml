@@ -4,14 +4,16 @@ build:
   variables:
     CGO_ENABLED: "0"
   script:
+    - git config --global url."https://gitlab-ci-token:$CI_BUILD_TOKEN@git.dolansoft.org/".insteadOf "https://git.dolansoft.org/"
     - go build --ldflags="-w -s" -mod=readonly
   artifacts:
     paths:
-      - zfs-csi-driver
+      - zfs-pv
     expire_in: 30 days
 
 test:
   stage: test
   image: golang:1.11
   script:
+    - git config --global url."https://gitlab-ci-token:$CI_BUILD_TOKEN@git.dolansoft.org/".insteadOf "https://git.dolansoft.org/"
     - go test
