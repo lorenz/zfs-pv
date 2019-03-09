@@ -31,7 +31,6 @@ func listAndFilterDatasets(filter func(string, zfs.DatasetPropsWithSource) (bool
 	}
 pool:
 	for pool := range pools {
-		var cursor uint64
 		var name string
 		var props zfs.DatasetPropsWithSource
 		props, err = zfs.ObjsetStats(pool) // Root dataset
@@ -39,25 +38,41 @@ pool:
 		if add {
 			names = append(names, pool)
 		}
-		if cont {
+		if !cont {
 			break pool
 		}
-		for {
-			var err error
-			name, cursor, _, props, err = zfs.DatasetListNext(pool, cursor)
-			if err == unix.ESRCH {
-				break
+		var recurseList func(string) (error, bool)
+		recurseList = func(prefix string) (error, bool) {
+			var cursor uint64
+			for {
+				var err error
+				name, cursor, _, props, err = zfs.DatasetListNext(prefix, cursor)
+				if err == unix.ESRCH {
+					break
+				}
+				if err != nil {
+					return err, false
+				}
+				cont, add := filter(name, props)
+				if add {
+					names = append(names, name)
+				}
+				if !cont {
+					return nil, false
+				}
+				err, cont = recurseList(name)
+				if err != nil {
+					return err, false
+				}
+				if !cont {
+					return nil, false
+				}
 			}
-			if err != nil {
-				return names, err
-			}
-			cont, add := filter(name, props)
-			if add {
-				names = append(names, name)
-			}
-			if cont {
-				break pool
-			}
+			return nil, true
+		}
+		err, _ := recurseList(pool)
+		if err != nil {
+			return names, err
 		}
 	}
 	return names, nil
