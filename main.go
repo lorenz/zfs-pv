@@ -450,15 +450,12 @@ func deleteVolume(pv v1.PersistentVolume, classes map[string]string) (bool, erro
 	}
 
 	name := path.Join(prefix, volumeID)
-	_, err := zfs.ObjsetStats(name)
-	if err == unix.ENOENT {
-		return false, nil
-	} else if err != nil {
-		return false, fmt.Errorf("Volume opening failed with unexpected error: %v", err)
-	}
 
 	glog.V(3).Infof("Destroying volume %s", volumeID)
-	if err := zfs.Destroy(name, zfs.ObjectTypeAny, false); err != nil {
+	err := zfs.Destroy(name, zfs.ObjectTypeAny, false);
+	if err == unix.ENOENT {
+		return false, nil
+	else if err != nil {
 		return false, fmt.Errorf("Volume deletion failed with unexpected error: %v", err)
 	}
 
