@@ -1,18 +1,18 @@
 package main
 
 import (
-	"golang.org/x/sys/unix"
-	"strconv"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"golang.org/x/sys/unix"
 	"os"
 	"path"
+	"strconv"
 	"time"
 
+	zfs "git.dolansoft.org/lorenz/go-zfs/ioctl"
 	"github.com/golang/glog"
 	"github.com/moby/moby/pkg/mount"
-	zfs "git.dolansoft.org/lorenz/go-zfs/ioctl"
 	"k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -371,7 +371,7 @@ func adoptVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (*v1.
 	var guid uint64
 
 	datasetsWithToken, err := listAndFilterDatasets(func(name string, props zfs.DatasetPropsWithSource) (bool, bool) {
-		if tokenProp, ok := props["dolansoft-zfs:adoption-token"]; ok{
+		if tokenProp, ok := props["dolansoft-zfs:adoption-token"]; ok {
 			if tokenProp.Value.(string) == token && tokenProp.Source == "local" {
 				guid = props["guid"].Value.(uint64)
 				return true, true // Add and continue
@@ -451,7 +451,7 @@ func deleteVolume(pv v1.PersistentVolume, classes map[string]string) (bool, erro
 
 	name := path.Join(prefix, volumeID)
 	_, err := zfs.ObjsetStats(name)
-	if err == unix.ESRCH {
+	if err == unix.ENOENT {
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("Volume opening failed with unexpected error: %v", err)

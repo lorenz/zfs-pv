@@ -4,6 +4,8 @@ git.dolansoft.org/lorenz/go-zfs v0.0.0-20190306191732-d68f3d680d6f h1:w3Vh4dW831
 git.dolansoft.org/lorenz/go-zfs v0.0.0-20190306191732-d68f3d680d6f/go.mod h1:6zc4DV/PI4nFiVT9Y4+ynUR7pcgjmpd4yYEinj7Y9tI=
 git.dolansoft.org/lorenz/go-zfs v0.0.0-20190307012801-3ec2ec7de3c8 h1:ZmwakAseApDT8pdzKZO8hhK2tcBpKVKWhOtewK43r+w=
 git.dolansoft.org/lorenz/go-zfs v0.0.0-20190307012801-3ec2ec7de3c8/go.mod h1:6zc4DV/PI4nFiVT9Y4+ynUR7pcgjmpd4yYEinj7Y9tI=
+git.dolansoft.org/lorenz/go-zfs v0.0.0-20190307032949-743f6e19ce0b h1:hAsJut+J1X5SzEdAQNHByCRRVnKWqkQQ2lBITSmbiIE=
+git.dolansoft.org/lorenz/go-zfs v0.0.0-20190307032949-743f6e19ce0b/go.mod h1:6zc4DV/PI4nFiVT9Y4+ynUR7pcgjmpd4yYEinj7Y9tI=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
