@@ -281,6 +281,8 @@ func provisionVolume(pvc *v1.PersistentVolumeClaim, classes map[string]string) (
 			}
 		}
 	}
+	
+	props["compression"] = 15 // LZ4
 
 	/*if compression, ok := pvc.Annotations["zfs.dolansoft.org/compression"]; ok {
 		props[zfs.DatasetPropCompression] = zfs.Property{Value: compression}
